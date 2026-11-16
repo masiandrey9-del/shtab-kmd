@@ -12,4 +12,4 @@ alter table public.docs enable row level security;
 drop policy if exists "owner all" on public.docs;
 create policy "owner all" on public.docs for all to authenticated using (true) with check (true);
 -- Живые обновления: изменения, которые вносит Claude, сразу видны на открытом сайте.
-alter publication supabase_realtime add table public.docs;
+do $$ begin alter publication supabase_realtime add table public.docs; exception when duplicate_object then null; end $$;
