@@ -603,7 +603,7 @@ document.addEventListener("submit", async e=>{
 document.addEventListener("input", e=>{ if(e.target.id==="q"){ UI.q=e.target.value; const pos=e.target.selectionStart; render(); const q=$("#q"); q.focus(); q.setSelectionRange(pos,pos); } });
 $("#scrim").onclick=closeDrawer;
 document.addEventListener("keydown", e=>{ if(e.key==="Escape" && drawerState) closeDrawer(); });
-$("#menuBtn").onclick=()=>{ if(demo){ toast("В демо-режиме настроек нет"); return; } openDrawer("settings","main"); };
+if($("#menuBtn")) $("#menuBtn").onclick=()=>{ if(demo){ toast("В демо-режиме настроек нет"); return; } openDrawer("settings","main"); };
 $("#quickAdd").onclick=()=>openDrawer("task",null,{due:today(),area:view()==="marketing"?"marketing":"clients"});
 window.addEventListener("hashchange", render);
 let toastT; function toast(m){ const t=$("#toast"); t.textContent=m; t.hidden=false; clearTimeout(toastT); toastT=setTimeout(()=>t.hidden=true,2400); }
