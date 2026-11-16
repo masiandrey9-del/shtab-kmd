@@ -31,6 +31,7 @@
       <div class="top-right">
         <span id="sync" class="sync" title="Состояние связи с базой"></span>
         <button class="btn primary sm" id="quickAdd" type="button">+ Задача</button>
+        <button class="btn sm menu-btn" id="menuBtn" type="button" aria-label="Настройки и выход">☰</button>
       </div>
     </div>
   </header>
@@ -55,6 +56,15 @@
     <input id="lPass" type="password" autocomplete="current-password" required>
     <button class="btn primary" type="submit">Войти</button>
     <p id="lErr" class="err" hidden></p>
+  </form>
+  <form id="mfaForm" class="login-card" hidden>
+    <h1>Штаб<b>КМД</b></h1>
+    <p class="muted">Код из приложения-аутентификатора (6 цифр)</p>
+    <label for="lCode">Код</label>
+    <input id="lCode" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
+    <button class="btn primary" type="submit">Подтвердить</button>
+    <p id="mErr" class="err" hidden></p>
+    <button class="btn ghost sm" type="button" id="mfaCancel" style="margin-top:8px">Выйти</button>
   </form>
 </div>
 

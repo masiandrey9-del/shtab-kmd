@@ -16,6 +16,8 @@ const CLOSED = new Set(["paid","lost","pause"]);
 const TONE = {new:"hot",files:"",pricing:"hot",kp:"hot",prepay:"work",work:"work",done:"work",paid:"ok",pause:"off",lost:"off",
   idea:"",script:"",voice:"",edit:"work",ready:"hot",out:"ok"};
 const PLAN_ST = [["plan","План"],["ready","Готово"],["out","Вышло"]];
+const CLIENT_KINDS = [["lead","Обращение"],["client","Клиент"],["regular","Постоянный"],["partner","Партнёр"],["cold","Холодный"],["lost","Не наш"]];
+const CHANNELS = ["Telegram","МАКС","WhatsApp","Instagram","ВКонтакте","Звонок","Почта","Авито","Встреча","Другое"];
 
 const $ = (s,el=document)=>el.querySelector(s);
 const esc = s => String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -44,9 +46,10 @@ function apply(col,id,data){ if(!S[col]) return; if(data==null) delete S[col][id
 
 async function boot(){
   if(CFG.supabaseUrl && CFG.supabaseKey && window.supabase){
-    sb = window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseKey);
+    sb = window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseKey, {auth:{persistSession:true, autoRefreshToken:true}});
     const {data:{session}} = await sb.auth.getSession();
     if(!session){ showLogin(); return; }
+    if(await needMfa()){ showMfa(); return; }
     await startSupabase();
   } else {
     demo = true;
@@ -58,28 +61,59 @@ async function boot(){
   }
 }
 function showLogin(){
-  $("#login").hidden=false;
+  $("#login").hidden=false; $("#loginForm").hidden=false; $("#mfaForm").hidden=true;
   $("#loginForm").onsubmit = async e => {
     e.preventDefault(); $("#lErr").hidden=true;
+    const btn=e.target.querySelector("button[type=submit]"); btn.disabled=true;
     const {error} = await sb.auth.signInWithPassword({email:$("#lEmail").value.trim(), password:$("#lPass").value});
-    if(error){ $("#lErr").textContent="Не вышло войти: проверьте почту и пароль."; $("#lErr").hidden=false; return; }
+    btn.disabled=false; $("#lPass").value="";
+    if(error){ $("#lErr").textContent = /rate|many/i.test(error.message)? "Слишком много попыток. Подождите несколько минут." : "Не вышло войти: проверьте почту и пароль."; $("#lErr").hidden=false; return; }
+    if(await needMfa()){ showMfa(); return; }
     $("#login").hidden=true; await startSupabase();
   };
 }
-async function startSupabase(){
-  setSync("загрузка…");
+/* Вход с кодом из приложения (2FA): если он включён, без кода база данные не отдаёт. */
+async function needMfa(){
+  try{ const {data,error}=await sb.auth.mfa.getAuthenticatorAssuranceLevel(); if(error) return false;
+    return data.nextLevel==="aal2" && data.currentLevel!=="aal2"; }catch(e){ return false; }
+}
+function showMfa(){
+  $("#login").hidden=false; $("#loginForm").hidden=true; $("#mfaForm").hidden=false; $("#lCode").value=""; $("#lCode").focus();
+  $("#mfaCancel").onclick=logout;
+  $("#mfaForm").onsubmit = async e => {
+    e.preventDefault(); $("#mErr").hidden=true;
+    const {data:f}=await sb.auth.mfa.listFactors(); const fac=((f&&f.totp)||[]).find(x=>x.status==="verified");
+    if(!fac){ $("#login").hidden=true; await startSupabase(); return; }
+    const {error}=await sb.auth.mfa.challengeAndVerify({factorId:fac.id, code:$("#lCode").value.trim()});
+    if(error){ $("#mErr").textContent="Код не подошёл. Введите свежий код из приложения."; $("#mErr").hidden=false; return; }
+    $("#login").hidden=true; await startSupabase();
+  };
+}
+async function logout(){ try{ await sb.auth.signOut(); }catch(e){} try{ localStorage.removeItem("crm-notified"); }catch(e){} location.replace(location.pathname); }
+let started=false;
+async function loadAll(){
   const {data, error} = await sb.from("docs").select("col,id,data").range(0,9999);
-  if(error){ setSync("нет связи с базой","bad"); toast("База не отвечает: "+error.message); return; }
+  if(error){
+    setSync("нет связи с базой","bad");
+    if(/jwt|token|auth/i.test(error.message)){ showLogin(); } else toast("База не отвечает: "+error.message);
+    return false;
+  }
   COLS.forEach(c=>S[c]={});
   data.forEach(r=>{ if(S[r.col]) S[r.col][r.id]=r.data; });
-  render();
+  queueRender();
+  return true;
+}
+async function startSupabase(){
+  setSync("загрузка…");
+  if(!(await loadAll())) return;
+  if(started) return; started=true;
+  sb.auth.onAuthStateChange(ev=>{ if(ev==="SIGNED_OUT") location.replace(location.pathname); });
   sb.channel("docs-live").on("postgres_changes",{event:"*",schema:"public",table:"docs"}, p=>{
     if(p.eventType==="DELETE") apply(p.old.col,p.old.id,null); else apply(p.new.col,p.new.id,p.new.data);
   }).subscribe(st=>{ setSync(st==="SUBSCRIBED"?"онлайн":"переподключение…", st==="SUBSCRIBED"?"":"bad"); });
-  document.addEventListener("visibilitychange", async ()=>{ if(document.visibilityState==="visible") {
-    const r = await sb.from("docs").select("col,id,data").range(0,9999);
-    if(!r.error){ COLS.forEach(c=>S[c]={}); r.data.forEach(x=>{ if(S[x.col]) S[x.col][x.id]=x.data; }); queueRender(); }
-  }});
+  document.addEventListener("visibilitychange", ()=>{ if(document.visibilityState==="visible") loadAll(); });
+  window.addEventListener("online", ()=>loadAll());
+  startNotifier();
 }
 function saveDemo(){ try{ localStorage.setItem("crm-demo", JSON.stringify(S)); }catch(e){} }
 async function save(col,id,data){
@@ -87,14 +121,14 @@ async function save(col,id,data){
   S[col][id]=data; queueRender();
   if(demo){ saveDemo(); return true; }
   const {error} = await sb.from("docs").upsert({col,id,data,updated_at:data.updatedAt});
-  if(error){ toast("Не сохранилось: "+error.message); return false; }
+  if(error){ toast("Не сохранилось: "+(navigator.onLine?error.message:"нет интернета")); loadAll(); return false; }
   return true;
 }
 async function remove(col,id){
   delete S[col][id]; queueRender();
   if(demo){ saveDemo(); return; }
   const {error} = await sb.from("docs").delete().eq("col",col).eq("id",id);
-  if(error) toast("Не удалилось: "+error.message);
+  if(error){ toast("Не удалилось: "+error.message); loadAll(); }
 }
 function strip(o){ const c=Object.assign({},o); delete c.id; return c; }
 
@@ -117,16 +151,17 @@ function render(){
 function taskRow(t){
   const deal = t.dealId && S.deals[t.dealId]; const cl = t.clientId && S.clients[t.clientId]; const vid = t.videoId && S.videos[t.videoId];
   const links = [];
-  if(cl) links.push(`<a class="t-link" data-act="client" data-id="${t.clientId}">${esc(cl.name)}</a>`);
-  if(deal) links.push(`<a class="t-link" data-act="deal" data-id="${t.dealId}">${esc(short(deal.title,38))}</a>`);
-  if(vid) links.push(`<a class="t-link" data-act="video" data-id="${t.videoId}">${vid.num?"№"+vid.num+" ":""}${esc(vid.title)}</a>`);
+  if(cl) links.push(`<a class="t-link" data-act="client" data-id="${esc(t.clientId)}">${esc(cl.name)}</a>`);
+  if(deal) links.push(`<a class="t-link" data-act="deal" data-id="${esc(t.dealId)}">${esc(short(deal.title,38))}</a>`);
+  if(vid) links.push(`<a class="t-link" data-act="video" data-id="${esc(t.videoId)}">${vid.num?"№"+vid.num+" ":""}${esc(vid.title)}</a>`);
   return `<div class="task ${t.done?"done":""}">
-    <input type="checkbox" class="chk" data-act="toggle" data-id="${t.id}" ${t.done?"checked":""} aria-label="Выполнено">
-    <div class="t-body" data-act="task" data-id="${t.id}">
-      <div class="t-title">${esc(t.title)}</div>
+    <input type="checkbox" class="chk" data-act="toggle" data-id="${esc(t.id)}" ${t.done?"checked":""} aria-label="Выполнено">
+    <div class="t-body" data-act="task" data-id="${esc(t.id)}">
+      <div class="t-title">${t.time&&!t.done?`<span class="t-time">${esc(t.time)}</span>`:""}${esc(t.title)}</div>
       <div class="t-meta">${links.join(" · ")}
         ${t.area==="marketing"?'<span class="tag mk">маркетинг</span>':""}
         ${t.waiting?'<span class="tag wait">ждём клиента</span>':""}
+        ${t.draft?'<span class="tag">есть черновик</span>':""}
         ${t.by==="claude"?'<span class="tag claude">Claude</span>':""}</div>
     </div>
     <span class="due ${t.done?"":dueClass(t.due)}">${t.done?"готово":esc(dueLabel(t.due))}</span>
@@ -141,7 +176,7 @@ function taskGroups(tasks){
     if(!x.due) g.none.push(x); else if(x.due<t) g.over.push(x); else if(x.due===t) g.today.push(x);
     else if(x.due===tom) g.tom.push(x); else if(x.due<=wk) g.week.push(x); else g.later.push(x);
   });
-  Object.values(g).forEach(a=>a.sort((a,b)=>(a.due||"9").localeCompare(b.due||"9")||String(a.title).localeCompare(b.title)));
+  Object.values(g).forEach(a=>a.sort((a,b)=>(a.due||"9").localeCompare(b.due||"9")||(a.time||"99").localeCompare(b.time||"99")||String(a.title).localeCompare(b.title)));
   return g;
 }
 function taskSection(title, arr, cls, collapsedAfter){
@@ -155,6 +190,7 @@ function quickAdd(area){
   return `<form class="quick" data-form="quick" data-area="${area}">
     <input type="text" name="title" placeholder="Новая задача: что сделать" aria-label="Новая задача" required>
     <input type="date" name="due" value="${today()}" aria-label="Срок">
+    <input type="time" name="time" aria-label="Время напоминания" title="Время: бот напомнит в Телеграм">
     <button class="btn primary" type="submit">Добавить</button></form>`;
 }
 
@@ -207,7 +243,7 @@ function vBoard(){
 }
 function dealCard(d){
   const cl = S.clients[d.clientId]; const nt = nextTask(t=>t.dealId===d.id);
-  return `<article class="card" data-id="${d.id}" data-act="deal">
+  return `<article class="card" data-id="${esc(d.id)}" data-act="deal">
     <div class="c-client">${esc(cl?cl.name:"Без клиента")}</div>
     <div class="c-title">${esc(d.title)}</div>
     <div class="c-foot">${d.amount?`<span class="sum">${money(d.amount)}</span>`:""}
@@ -218,7 +254,7 @@ function dealCard(d){
 
 function vClients(){
   const q = UI.q.toLowerCase();
-  const cls = list("clients").filter(c=> !q || [c.name,c.company,c.source,c.contact,c.about].join(" ").toLowerCase().includes(q) ||
+  const cls = list("clients").filter(c=> !q || [c.name,c.company,c.source,c.contact,c.about,c.city,c.phone,c.messenger,c.email,c.inn,c.theirClients,c.firstMessage,c.notes,c.tags].join(" ").toLowerCase().includes(q) ||
     list("deals").some(d=>d.clientId===c.id && String(d.title).toLowerCase().includes(q)));
   const rows = cls.map(c=>{
     const ds = list("deals").filter(d=>d.clientId===c.id);
@@ -228,11 +264,11 @@ function vClients(){
   }).sort((a,b)=> (b.active-a.active) || (a.nt?a.nt.due||"9":"99").localeCompare(b.nt?b.nt.due||"9":"99") || a.c.name.localeCompare(b.c.name));
   return `<div class="h-row"><h1 class="page">Клиенты <span class="muted mono" style="font-size:16px">${list("clients").length}</span></h1>
     <button class="btn primary sm" data-act="newClient">+ Клиент</button></div>
-    <div class="searchbar"><input type="search" id="q" placeholder="Поиск: имя, объект, контакт" value="${esc(UI.q)}" aria-label="Поиск клиентов"></div>
+    <div class="searchbar"><input type="search" id="q" placeholder="Поиск: имя, город, телефон, объект" value="${esc(UI.q)}" aria-label="Поиск клиентов"></div>
     <div class="clist"><div class="crow crow-h"><div>Клиент</div><div>Откуда / контакт</div><div>Объекты и этапы</div><div>Ближайшее</div></div>
-    ${rows.map(({c,ds,nt})=>`<div class="crow" data-act="client" data-id="${c.id}">
-      <div class="nm">${esc(c.name)}${c.company?`<div class="src">${esc(short(c.company,40))}</div>`:""}</div>
-      <div class="src">${esc(c.source||"")}${c.contact?"<br>"+esc(short(c.contact,48)):""}</div>
+    ${rows.map(({c,ds,nt})=>`<div class="crow" data-act="client" data-id="${esc(c.id)}">
+      <div class="nm">${esc(c.name)}${(c.company||c.city)?`<div class="src">${esc(short([c.company,c.city].filter(Boolean).join(" · "),48))}</div>`:""}</div>
+      <div class="src">${esc(c.source||"")}${(c.messenger||c.phone||c.contact)?"<br>"+esc(short(c.messenger||c.phone||c.contact,48)):""}</div>
       <div class="pills">${ds.map(d=>`<span class="pill" data-tone="${TONE[d.stage]||""}" title="${esc(d.title)}">${esc(stageName(d.stage,dealStages()))}</span>`).join("")||'<span class="muted">нет объектов</span>'}</div>
       <div>${nt?`<span class="due ${dueClass(nt.due)}">${esc(dueLabel(nt.due))}</span>`:'<span class="muted" style="font-size:13px">—</span>'}</div>
     </div>`).join("") || '<div class="empty">Никого не нашлось.</div>'}</div>`;
@@ -268,7 +304,7 @@ function vMarketing(){
 }
 function videoCard(v){
   const nt = nextTask(t=>t.videoId===v.id);
-  return `<article class="card vcard" data-id="${v.id}" data-act="video">
+  return `<article class="card vcard" data-id="${esc(v.id)}" data-act="video">
     <div class="c-client">${v.num?`<span class="num">№${v.num}</span>`:""}${esc(v.title)}</div>
     ${v.notes?`<div class="c-title">${esc(v.notes)}</div>`:""}
     <div class="c-foot">${v.date?`<span class="due">${esc(fmtD(v.date))}</span>`:""}${nt?`<span class="due ${dueClass(nt.due)}" title="${esc(nt.title)}">${esc(short(nt.title,22))}</span>`:""}</div>
@@ -314,7 +350,7 @@ const clientOpts = sel => opt(list("clients").sort((a,b)=>a.name.localeCompare(b
 
 function drawRender(){
   const {kind,id,preset}=drawerState; const isNew=!id; const D=$("#drawer");
-  const doc = isNew ? Object.assign({},preset) : Object.assign({id}, S[kind==="plan"?"plan":kind+"s"][id]||{});
+  const doc = isNew ? Object.assign({},preset) : Object.assign({id}, (S[kind==="plan"?"plan":kind+"s"]||{})[id]||{});
   let eyebrow="", title="", body="", side="";
   if(kind==="deal"){
     const cl=S.clients[doc.clientId];
@@ -332,30 +368,52 @@ function drawRender(){
         <ul class="log" id="dl_log"></ul>`);
   }
   if(kind==="client"){
-    eyebrow="Клиент"; title=isNew?"Новый клиент":esc(doc.name);
-    body = fld("Имя",inp("name",doc.name,"text","required"))+
-      `<div class="grid2">${fld("Компания",inp("company",doc.company))}${fld("Откуда пришёл",inp("source",doc.source,"text",'list="srcList"'))}</div>
-       <datalist id="srcList"><option>Instagram</option><option>Telegram</option><option>МАКС</option><option>ВКонтакте</option><option>Почта</option><option>Биржа stroy-control1</option><option>Сарафан</option></datalist>`+
-      fld("Контакты",inp("contact",doc.contact))+
+    eyebrow="Клиент"+(doc.kind?" · "+esc((CLIENT_KINDS.find(k=>k[0]===doc.kind)||["",doc.kind])[1]):""); title=isNew?"Новый клиент":esc(doc.name);
+    const ds = isNew?[]:list("deals").filter(d=>d.clientId===id);
+    const sumAll = ds.reduce((x,d)=>x+(+d.amount||0),0), paidAll = ds.reduce((x,d)=>x+(+d.paid||0),0);
+    body = (isNew?"":`<div class="facts">
+        <div><span>Город</span><b>${esc(doc.city||"—")}</b></div><div><span>Откуда</span><b>${esc(doc.source||"—")}</b></div>
+        <div><span>Первый контакт</span><b>${doc.firstContact?esc(fmtD(doc.firstContact)):"—"}</b></div>
+        <div><span>Объектов</span><b>${ds.length}${sumAll?" · "+money(sumAll):""}</b></div><div><span>Оплачено</span><b>${money(paidAll)}</b></div></div>`)+
+      `<div class="grid2">${fld("Имя",inp("name",doc.name,"text","required"))}${fld("Тип",`<select id="f_kind" name="kind">${opt(CLIENT_KINDS,doc.kind||"lead")}</select>`)}</div>`+
+      `<div class="grid2">${fld("Компания",inp("company",doc.company))}${fld("Город",inp("city",doc.city))}</div>`+
+      `<div class="grid2">${fld("Откуда пришёл",inp("source",doc.source,"text",'list="srcList"'))}${fld("Первый контакт",inp("firstContact",doc.firstContact,"date"))}</div>
+       <datalist id="srcList"><option>Instagram</option><option>Telegram</option><option>МАКС</option><option>ВКонтакте</option><option>Авито</option><option>Профи.ру</option><option>Сайт</option><option>Почта</option><option>Звонок</option><option>Биржа stroy-control1</option><option>Сарафан</option></datalist>`+
+      fld("Что написал в первый раз",area("firstMessage",doc.firstMessage,3))+
+      `<div class="grid2">${fld("Телефон",inp("phone",doc.phone,"tel"))}${fld("Мессенджер / ник",inp("messenger",doc.messenger,"text",'placeholder="@ник, МАКС, Instagram"'))}</div>`+
+      `<div class="grid2">${fld("Почта / сайт",inp("email",doc.email))}${fld("ИНН / реквизиты",inp("inn",doc.inn))}</div>`+
+      fld("Другие контакты",inp("contact",doc.contact))+
       fld("Чем занимается",area("about",doc.about,2))+
+      fld("Его заказчики / для кого работает",area("theirClients",doc.theirClients,2))+
+      fld("Метки",inp("tags",doc.tags,"text",'placeholder="через запятую: завод, ГИП, срочно"'))+
       fld("Заметки",area("notes",doc.notes,3))+
       (isNew?"":`<h2 class="sec">Объекты</h2><div class="sub" id="dl_deals"></div>
-        <div class="addline"><button class="btn sm" data-act="newDealFor" data-client="${id}">+ Объект</button></div>
+        <div class="addline"><button class="btn sm" data-act="newDealFor" data-client="${esc(id)}">+ Объект</button></div>
         <h2 class="sec">Задачи</h2><div class="sub" id="dl_tasks"></div>
-        <div class="addline"><button class="btn sm" data-act="newTaskFor" data-client="${id}">+ Задача</button></div>`)+
-      fld("История переписки",area("history",doc.history,8));
+        <div class="addline"><button class="btn sm" data-act="newTaskFor" data-client="${esc(id)}">+ Задача</button></div>
+        <h2 class="sec">Переписка и события</h2>
+        <div class="addline wrap"><select id="f_lch" aria-label="Канал">${opt(CHANNELS.map(c=>[c,c]),doc.lastChannel||CHANNELS[0])}</select>
+          <select id="f_ldir" aria-label="Кто писал">${opt([["in","Клиент написал"],["out","Мы ответили"],["note","Пометка"]],"in")}</select></div>
+        <div class="addline"><textarea id="f_lnew" rows="2" placeholder="Что написал / что ответили (можно вставить текст целиком)"></textarea><button class="btn sm" data-act="addCLog">Добавить</button></div>
+        <ul class="log" id="dl_clog"></ul>`)+
+      fld("Старая история переписки (текстом)",area("history",doc.history,6));
   }
   if(kind==="task"){
     eyebrow = doc.by==="claude"?"Задача · поставил Claude":"Задача"; title=isNew?"Новая задача":esc(doc.title);
     const deals = list("deals").filter(d=>!doc.clientId || d.clientId===doc.clientId);
     body = fld("Что сделать",area("title",doc.title,2))+
-      `<div class="grid2">${fld("Срок",inp("due",doc.due,"date"))}${fld("Раздел",`<select id="f_area" name="area">${opt([["clients","Клиенты"],["marketing","Маркетинг"]],doc.area||"clients")}</select>`)}</div>`+
+      `<div class="grid2">${fld("Срок",inp("due",doc.due,"date"))}${fld("Время напоминания",inp("time",doc.time,"time"))}</div>`+
+      `<p class="hint">${doc.time?(doc.remindedAt?"Напоминание уже пришло в Телеграм. Поменяете срок или время, придёт снова.":"Бот напомнит в Телеграм в это время."):"Укажите время, и бот напомнит в Телеграм."}</p>`+
+      fld("Раздел",`<select id="f_area" name="area">${opt([["clients","Клиенты"],["marketing","Маркетинг"]],doc.area||"clients")}</select>`)+
       fld("Клиент",`<select id="f_clientId" name="clientId">${clientOpts(doc.clientId)}</select>`)+
       fld("Объект",`<select id="f_dealId" name="dealId">${opt(deals.map(d=>[d.id,(S.clients[d.clientId]||{}).name+": "+short(d.title,50)]),doc.dealId,"— без объекта —")}</select>`)+
       fld("Ролик",`<select id="f_videoId" name="videoId">${opt(list("videos").sort((a,b)=>(b.num||0)-(a.num||0)).map(v=>[v.id,(v.num?"№"+v.num+" ":"")+v.title]),doc.videoId,"— без ролика —")}</select>`)+
       `<label class="f" style="display:flex;gap:8px;align-items:center;text-transform:none;letter-spacing:0;font:15px var(--f-body);color:var(--ink)"><input type="checkbox" id="f_waiting" name="waiting" ${doc.waiting?"checked":""}> Ждём ответа клиента</label>`+
-      fld("Пометка",area("note",doc.note,3));
+      fld("Пометка",area("note",doc.note,3))+
+      fld("Черновик сообщения клиенту",area("draft",doc.draft,4))+
+      (doc.draft?`<div class="addline"><button class="btn sm" data-act="copyDraft">Скопировать черновик</button></div>`:"");
   }
+  if(kind==="settings"){ eyebrow="Настройки"; title="Безопасность и уведомления"; body='<div id="setBody"><p class="muted">Загрузка…</p></div>'; }
   if(kind==="video"){
     eyebrow="Ролик"; title=isNew?"Новый ролик":(doc.num?"№"+doc.num+" ":"")+esc(doc.title);
     body = `<div class="grid2">${fld("Номер",inp("num",doc.num||"","number"))}${fld("Этап",`<select id="f_stage" name="stage">${opt(videoStages().map(s=>[s.id,s.name]),doc.stage||"idea")}</select>`)}</div>`+
@@ -378,8 +436,9 @@ function drawRender(){
   D.innerHTML = `<div class="d-head"><div style="flex:1;min-width:0"><div class="eyebrow">${eyebrow}</div><h3>${title}</h3></div>
       <button class="btn ghost sm" data-act="close" aria-label="Закрыть">✕</button></div>
     <form class="d-body" id="dform">${body}</form>
-    <div class="d-foot">${isNew?"":`<button class="btn ghost danger left" data-act="askDel">Удалить</button>`}<span id="delbox"></span>
-      <button class="btn" data-act="close">Отмена</button><button class="btn primary" data-act="save">Сохранить</button></div>`;
+    <div class="d-foot">${kind==="settings"?`<button class="btn" data-act="close">Закрыть</button>`:`${isNew?"":`<button class="btn ghost danger left" data-act="askDel">Удалить</button>`}<span id="delbox"></span>
+      <button class="btn" data-act="close">Отмена</button><button class="btn primary" data-act="save">Сохранить</button>`}</div>`;
+  if(kind==="settings"){ renderSettings(); return; }
   refreshDrawerLists();
   const f=$("#dform"); f.onsubmit=e=>{e.preventDefault(); drawerSave();};
   if(kind==="task"){ $("#f_clientId").onchange=e=>{ const c=e.target.value; const ds=list("deals").filter(d=>!c||d.clientId===c);
@@ -394,8 +453,13 @@ function refreshDrawerLists(){
     tl.innerHTML = ts.map(taskRow).join("") || '<div class="empty">Задач нет.</div>'; tl.className="tasks"; }
   const dl=$("#dl_deals");
   if(dl){ const ds=list("deals").filter(d=>d.clientId===id);
-    dl.innerHTML = ds.map(d=>`<div class="srow" data-act="deal" data-id="${d.id}"><div class="l"><b>${esc(d.title)}</b><span>${d.amount?money(d.amount)+" · ":""}${d.paid?"оплачено "+money(d.paid):""}</span></div>
+    dl.innerHTML = ds.map(d=>`<div class="srow" data-act="deal" data-id="${d.id}"><div class="l"><b>${esc(d.title)}</b><span>${[d.amount?money(d.amount):"",d.paid?"оплачено "+money(d.paid):""].filter(Boolean).join(" · ")}</span></div>
       <span class="pill" data-tone="${TONE[d.stage]||""}">${esc(stageName(d.stage,dealStages()))}</span></div>`).join("") || '<div class="empty">Объектов нет.</div>'; }
+  const cg=$("#dl_clog");
+  if(cg){ const c=S.clients[id]||{}; const items=(c.log||[]).map(l=>Object.assign({src:"c"},l));
+    list("deals").filter(d=>d.clientId===id).forEach(d=>(d.log||[]).forEach(l=>items.push(Object.assign({src:"d",deal:short(d.title,30)},l))));
+    items.sort((a,b)=>String(b.at).localeCompare(String(a.at)));
+    cg.innerHTML = items.map(l=>`<li class="${l.dir==="in"?"in":l.dir==="out"?"out":""}"><span class="who">${esc(fmtD(String(l.at).slice(0,10)))} · ${esc(l.by||"")}${l.ch?" · "+esc(l.ch):""}${l.deal?" · "+esc(l.deal):""}</span>${l.dir==="in"?"<b>Клиент:</b> ":l.dir==="out"?"<b>Мы:</b> ":""}<span class="pre-line">${esc(l.text)}</span></li>`).join("") || '<li class="muted">Пока пусто.</li>'; }
   const lg=$("#dl_log");
   if(lg){ const d=S.deals[id]||{}; lg.innerHTML = (d.log||[]).slice().reverse().map(l=>`<li><span class="who">${esc(fmtD(l.at))} · ${esc(l.by||"")}</span>${esc(l.text)}</li>`).join("") || '<li class="muted">Пока пусто.</li>'; }
 }
@@ -420,8 +484,75 @@ async function drawerSave(){
     else if(old.stage!==doc.stage) doc.log=doc.log.concat([{at:today(),by:"Андрей",text:"Этап: "+stageName(old.stage,dealStages())+" → "+stageName(doc.stage,dealStages())}]);
   }
   if(kind==="task" && !old){ doc.by="andrey"; doc.done=false; doc.createdAt=nowIso(); }
+  if(kind==="task" && old && (old.due!==doc.due || (old.time||"")!==(doc.time||""))) doc.remindedAt="";
   if(kind==="client" && !old){ doc.createdAt=nowIso(); }
   if(await save(col,nid,doc)){ toast("Сохранено"); closeDrawer(); }
+}
+
+/* ---------- настройки: 2FA, уведомления, выход ---------- */
+let enrolling=null;
+async function renderSettings(){
+  const box=$("#setBody"); if(!box) return;
+  let mfa='';
+  try{
+    const {data}=await sb.auth.mfa.listFactors(); const on=((data&&data.totp)||[]).filter(f=>f.status==="verified");
+    const {data:u}=await sb.auth.getUser();
+    mfa = on.length
+      ? `<p><b class="ok-t">Включён.</b> При входе сайт спросит код из приложения. Без кода база ничего не покажет, даже если кто-то узнает пароль.</p>
+         <button class="btn sm" data-act="mfaOff" data-id="${esc(on[0].id)}">Отключить вход с кодом</button>`
+      : `<p>Сейчас вход только по паролю. Включите код из приложения (Google Authenticator, Яндекс Ключ и т.п.): тогда одного пароля для входа будет мало.</p>
+         <button class="btn primary sm" data-act="mfaOn">Включить вход с кодом</button><div id="mfaBox"></div>`;
+    mfa = `<p class="muted" style="font-size:13px">Вы вошли как ${esc(u&&u.user?u.user.email:"")}</p>`+mfa;
+  }catch(e){ mfa='<p class="err">Не удалось проверить: '+esc(e.message)+'</p>'; }
+  const perm = ("Notification" in window)? Notification.permission : "none";
+  box.innerHTML = `<h2 class="sec">Вход с кодом (2FA)</h2>${mfa}
+    <h2 class="sec">Напоминания</h2>
+    <p>У задачи со временем бот присылает напоминание в Телеграм в назначенную минуту, даже если сайт закрыт.</p>
+    <p>${perm==="granted"?"Уведомления на этом устройстве включены: пока сайт открыт, он тоже напомнит.":perm==="denied"?"Уведомления на этом устройстве запрещены в настройках браузера.":perm==="none"?"Этот браузер не умеет показывать уведомления.":'Можно включить уведомления и на этом устройстве (работают, пока сайт открыт). <button class="btn sm" data-act="notifOn">Включить</button>'}</p>
+    <h2 class="sec">Выход</h2><p>На чужом устройстве обязательно выходите.</p>
+    <button class="btn danger sm" data-act="logout">Выйти с этого устройства</button>`;
+}
+async function mfaEnroll(){
+  const box=$("#mfaBox"); box.innerHTML='<p class="muted">Готовлю код…</p>';
+  const {data:l}=await sb.auth.mfa.listFactors();
+  for(const f of ((l&&l.all)||[]).filter(f=>f.status!=="verified")) await sb.auth.mfa.unenroll({factorId:f.id});
+  const {data,error}=await sb.auth.mfa.enroll({factorType:"totp", friendlyName:"Штаб КМД "+today()});
+  if(error){ box.innerHTML='<p class="err">Не вышло: '+esc(error.message)+'</p>'; return; }
+  enrolling=data.id;
+  box.innerHTML=`<ol class="steps"><li>Откройте приложение-аутентификатор и отсканируйте код:</li></ol>
+    <img class="qr" alt="QR-код для приложения" src="${esc(data.totp.qr_code)}">
+    <p class="muted" style="font-size:13px">Если сканировать нечем, введите ключ вручную: <span class="mono">${esc(data.totp.secret)}</span></p>
+    <ol class="steps" start="2"><li>Впишите 6 цифр, которые покажет приложение:</li></ol>
+    <div class="addline"><input id="f_mfacode" inputmode="numeric" maxlength="6" placeholder="123456" autocomplete="one-time-code"><button class="btn primary sm" data-act="mfaVerify">Подтвердить</button></div>`;
+}
+async function mfaVerify(){
+  const code=($("#f_mfacode").value||"").trim();
+  const {error}=await sb.auth.mfa.challengeAndVerify({factorId:enrolling, code});
+  if(error){ toast("Код не подошёл, попробуйте свежий"); return; }
+  enrolling=null; toast("Вход с кодом включён"); renderSettings();
+}
+async function mfaOff(fid){
+  const {error}=await sb.auth.mfa.unenroll({factorId:fid});
+  if(error){ toast("Не вышло: "+error.message); return; }
+  await sb.auth.refreshSession(); toast("Вход с кодом отключён"); renderSettings();
+}
+async function notifOn(){ try{ await Notification.requestPermission(); }catch(e){} renderSettings(); }
+/* Уведомления на устройстве, пока сайт открыт: задачи на сегодня со временем. Телеграм шлёт база сама. */
+function startNotifier(){
+  const tick=()=>{
+    if(!("Notification" in window) || Notification.permission!=="granted") return;
+    let seen={}; try{ seen=JSON.parse(localStorage.getItem("crm-notified")||"{}"); }catch(e){}
+    const d=new Date(), t=today(), hm=pad(d.getHours())+":"+pad(d.getMinutes()), from=pad(Math.max(0,d.getHours()-2))+":"+pad(d.getMinutes());
+    list("tasks").filter(x=>!x.done && x.due===t && x.time && x.time<=hm && x.time>=from).forEach(x=>{
+      const key=x.id+"|"+x.due+"|"+x.time; if(seen[key]) return; seen[key]=1;
+      const cl=x.clientId&&S.clients[x.clientId]; const body=(cl?cl.name+": ":"")+x.title;
+      const show=r=> r? r.showNotification("Штаб КМД · "+x.time,{body,tag:key,icon:"icon-192.png"}) : new Notification("Штаб КМД · "+x.time,{body,tag:key});
+      const safe=r=>{ try{ show(r); }catch(e){} };
+      if(navigator.serviceWorker && navigator.serviceWorker.controller) navigator.serviceWorker.ready.then(safe).catch(()=>safe()); else safe();
+    });
+    try{ localStorage.setItem("crm-notified",JSON.stringify(seen)); }catch(e){}
+  };
+  tick(); setInterval(tick,30000);
 }
 
 /* ---------- events ---------- */
@@ -451,18 +582,28 @@ document.addEventListener("click", async e=>{
   else if(act==="save"){ e.preventDefault(); drawerSave(); }
   else if(act==="askDel"){ e.preventDefault(); $("#delbox").innerHTML=`<span class="confirm">Удалить насовсем? <button class="btn sm danger" data-act="doDel">Да, удалить</button></span>`; }
   else if(act==="doDel"){ e.preventDefault(); const {kind,id:did}=drawerState; await remove(kind==="plan"?"plan":kind+"s",did); closeDrawer(); toast("Удалено"); }
+  else if(act==="menu"){ openDrawer("settings","main"); }
+  else if(act==="logout"){ e.preventDefault(); logout(); }
+  else if(act==="copyDraft"){ e.preventDefault(); const t=$("#f_draft"); try{ await navigator.clipboard.writeText(t.value); toast("Скопировано"); }catch(err){ t.select(); document.execCommand("copy"); toast("Скопировано"); } }
+  else if(act==="addCLog"){ e.preventDefault(); const t=$("#f_lnew"); const txt=t.value.trim(); if(!txt) return; const cid=drawerState.id; const c=S.clients[cid]; const ch=$("#f_lch").value;
+    await save("clients",cid,Object.assign({},c,{lastChannel:ch,log:(c.log||[]).concat([{at:nowIso(),by:"Андрей",ch,dir:$("#f_ldir").value,text:txt}])})); t.value=""; refreshDrawerLists(); }
+  else if(act==="mfaOn"){ e.preventDefault(); mfaEnroll(); }
+  else if(act==="mfaVerify"){ e.preventDefault(); mfaVerify(); }
+  else if(act==="mfaOff"){ e.preventDefault(); mfaOff(a.dataset.id); }
+  else if(act==="notifOn"){ e.preventDefault(); notifOn(); }
   else if(act==="addLog"){ e.preventDefault(); const inpEl=$("#f_lognew"); const txt=inpEl.value.trim(); if(!txt) return; const d=S.deals[drawerState.id];
     await save("deals",drawerState.id,Object.assign({},d,{log:(d.log||[]).concat([{at:today(),by:"Андрей",text:txt}])})); inpEl.value=""; refreshDrawerLists(); }
 });
 document.addEventListener("submit", async e=>{
   const f=e.target; if(f.dataset.form!=="quick") return; e.preventDefault();
   const title=f.title.value.trim(); if(!title) return;
-  await save("tasks",newId("t"),{title,due:f.due.value,done:false,area:f.dataset.area,clientId:"",dealId:"",videoId:"",by:"andrey",waiting:false,note:"",createdAt:nowIso()});
+  await save("tasks",newId("t"),{title,due:f.due.value,time:f.time?f.time.value:"",done:false,area:f.dataset.area,clientId:"",dealId:"",videoId:"",by:"andrey",waiting:false,note:"",createdAt:nowIso()});
   toast("Задача добавлена");
 });
 document.addEventListener("input", e=>{ if(e.target.id==="q"){ UI.q=e.target.value; const pos=e.target.selectionStart; render(); const q=$("#q"); q.focus(); q.setSelectionRange(pos,pos); } });
 $("#scrim").onclick=closeDrawer;
 document.addEventListener("keydown", e=>{ if(e.key==="Escape" && drawerState) closeDrawer(); });
+$("#menuBtn").onclick=()=>{ if(demo){ toast("В демо-режиме настроек нет"); return; } openDrawer("settings","main"); };
 $("#quickAdd").onclick=()=>openDrawer("task",null,{due:today(),area:view()==="marketing"?"marketing":"clients"});
 window.addEventListener("hashchange", render);
 let toastT; function toast(m){ const t=$("#toast"); t.textContent=m; t.hidden=false; clearTimeout(toastT); toastT=setTimeout(()=>t.hidden=true,2400); }
