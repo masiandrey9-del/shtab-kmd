@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Штаб КМД</title>
+<meta name="theme-color" content="#1b232c">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Штаб">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <header class="top">
+    <div class="top-in">
+      <a class="brand" href="#today" aria-label="Штаб КМД, на главную">
+        <svg viewBox="0 0 32 32" width="26" height="26" aria-hidden="true"><path d="M4 26V6h6v14h18v6z" fill="currentColor"/><path d="M14 6h14v4H14z" fill="var(--accent)"/></svg>
+        <span>Штаб<b>КМД</b></span>
+      </a>
+      <nav class="tabs" id="tabs">
+        <a href="#today" data-v="today">Сегодня</a>
+        <a href="#board" data-v="board">Воронка</a>
+        <a href="#clients" data-v="clients">Клиенты</a>
+        <a href="#marketing" data-v="marketing">Маркетинг</a>
+      </nav>
+      <div class="top-right">
+        <span id="sync" class="sync" title="Состояние связи с базой"></span>
+        <button class="btn primary sm" id="quickAdd" type="button">+ Задача</button>
+      </div>
+    </div>
+  </header>
+
+  <main id="view" class="view"></main>
+
+  <nav class="bottom" id="bottomTabs">
+    <a href="#today" data-v="today"><svg viewBox="0 0 24 24"><path d="M5 12l4 4 10-10"/></svg>Сегодня</a>
+    <a href="#board" data-v="board"><svg viewBox="0 0 24 24"><path d="M4 4h4v16H4zM10 4h4v10h-4zM16 4h4v6h-4z"/></svg>Воронка</a>
+    <a href="#clients" data-v="clients"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4-6 8-6s7 2 8 6"/></svg>Клиенты</a>
+    <a href="#marketing" data-v="marketing"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="14" height="14" rx="2"/><path d="M17 10l4-3v10l-4-3"/></svg>Маркетинг</a>
+  </nav>
+</div>
+
+<div id="login" class="login" hidden>
+  <form id="loginForm" class="login-card">
+    <h1>Штаб<b>КМД</b></h1>
+    <p class="muted">Вход для своих</p>
+    <label for="lEmail">Почта</label>
+    <input id="lEmail" type="email" autocomplete="username" required>
+    <label for="lPass">Пароль</label>
+    <input id="lPass" type="password" autocomplete="current-password" required>
+    <button class="btn primary" type="submit">Войти</button>
+    <p id="lErr" class="err" hidden></p>
+  </form>
+</div>
+
+<div id="scrim" class="scrim" hidden></div>
+<aside id="drawer" class="drawer" hidden aria-modal="true" role="dialog"></aside>
+<div id="toast" class="toast" hidden></div>
+
+<script src="vendor/Sortable.min.js"></script>
+<script src="vendor/supabase.js"></script>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
