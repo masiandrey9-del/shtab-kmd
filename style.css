@@ -297,3 +297,8 @@ h2.sec.today{color:var(--accent)} h2.sec.today .n{background:var(--accent-soft);
 .vparse .ok-t{border-color:var(--ok);font-weight:500;display:flex;align-items:center}
 .view{padding-bottom:96px}
 @media (max-width:760px){.view{padding-bottom:calc(150px + env(safe-area-inset-bottom,0px))}}
+/* где общаемся */
+.t-reach{margin-top:4px;font-size:13px;color:var(--muted);overflow-wrap:anywhere}
+.t-reach a,.reach-box a,.reach-in a{color:var(--accent,#c4521c);text-decoration:underline;text-underline-offset:2px}
+.reach-box{margin:0 0 14px;padding:10px 12px;border-radius:8px;background:var(--sunken);font-size:14px;line-height:1.5;overflow-wrap:anywhere}
+.reach-box .reach-in{display:inline}

@@ -163,9 +163,36 @@ function taskRow(t){
         ${t.waiting?'<span class="tag wait">ждём клиента</span>':""}
         ${t.draft?'<span class="tag">есть черновик</span>':""}
         ${t.by==="claude"?'<span class="tag claude">Claude</span>':""}</div>
+      ${cl?reachLine(cl):""}
     </div>
     <span class="due ${t.done?"":dueClass(t.due)}">${t.done?"готово":esc(dueLabel(t.due))}</span>
   </div>`;
+}
+
+/* ---------- где общаемся с клиентом ---------- */
+function reachParts(c){
+  if(!c) return [];
+  const out=[], seen=new Set(); const add=(txt,href)=>{ const k=txt.toLowerCase(); if(!txt||seen.has(k)) return; seen.add(k); out.push({txt,href}); };
+  const src = [c.where, c.where?"":c.messenger, c.phone, c.email].filter(Boolean).join("\n");
+  const ch = [c.where,c.messenger,c.lastChannel,c.source].filter(Boolean).join(" ");
+  for(const raw of src.split(/[\n,;]+/)){
+    const line=raw.trim(); if(!line) continue;
+    const ig=/instagram|инст|\bIG\b|директ/i.test(line), tg=/telegram|телег|\bTG\b|тг/i.test(line);
+    const nick=(line.match(/@([A-Za-z0-9_.]{3,})/)||line.match(/(?:^|\s)([A-Za-z0-9_.]{3,})\s*$/)||[])[1];
+    const mail=(line.match(/[\w.+-]+@[\w-]+\.[\w.]+/)||[])[0];
+    const tel=(line.match(/(\+7|8)[\d\s()\-]{9,}/)||[])[0];
+    if(mail){ add(line,"mailto:"+mail); continue; }
+    if(tel && !/[A-Za-z]{3}/.test(line.replace(tel,""))){ add(line,"tel:"+tel.replace(/[^\d+]/g,"")); continue; }
+    if(nick && !/директ/i.test(line) && (tg || (!ig && /telegram|тг/i.test(ch) && line.startsWith("@")))){ add(line,"https://t.me/"+nick.replace(/^@/,"")); continue; }
+    if(ig && /директ/i.test(line)){ add(line,"https://www.instagram.com/direct/inbox/"); continue; }
+    if(nick && (ig || /instagram/i.test(ch)) && !/директ/i.test(line)){ add(line,"https://instagram.com/"+nick.replace(/^@/,"")); continue; }
+    add(line,"");
+  }
+  return out;
+}
+function reachLine(c, cls){
+  const ps=reachParts(c); if(!ps.length) return "";
+  return `<div class="${cls||"t-reach"}">💬 ${ps.slice(0,3).map(p=>p.href?`<a href="${esc(p.href)}" target="_blank" rel="noopener" data-act="ext">${esc(short(p.txt,40))}</a>`:`<span>${esc(short(p.txt,40))}</span>`).join(" · ")}</div>`;
 }
 const short = (s,n) => { s=String(s||""); return s.length>n? s.slice(0,n-1)+"…" : s; };
 
@@ -255,7 +282,7 @@ function dealCard(d){
 function vClients(){
   const q = UI.q.toLowerCase();
   const kindOk = c => UI.ckind==="cold" ? c.kind==="cold" : UI.ckind==="all" ? true : c.kind!=="cold";
-  const cls = list("clients").filter(kindOk).filter(c=> !q || [c.name,c.company,c.source,c.contact,c.about,c.city,c.phone,c.messenger,c.email,c.inn,c.theirClients,c.firstMessage,c.notes,c.tags].join(" ").toLowerCase().includes(q) ||
+  const cls = list("clients").filter(kindOk).filter(c=> !q || [c.name,c.where,c.company,c.source,c.contact,c.about,c.city,c.phone,c.messenger,c.email,c.inn,c.theirClients,c.firstMessage,c.notes,c.tags].join(" ").toLowerCase().includes(q) ||
     list("deals").some(d=>d.clientId===c.id && String(d.title).toLowerCase().includes(q)));
   const rows = cls.map(c=>{
     const ds = list("deals").filter(d=>d.clientId===c.id);
@@ -272,7 +299,7 @@ function vClients(){
     <div class="clist"><div class="crow crow-h"><div>Клиент</div><div>Откуда / контакт</div><div>Объекты и этапы</div><div>Ближайшее</div></div>
     ${rows.map(({c,ds,nt})=>`<div class="crow" data-act="client" data-id="${esc(c.id)}">
       <div class="nm">${esc(c.name)}${(c.company||c.city)?`<div class="src">${esc(short([c.company,c.city].filter(Boolean).join(" · "),48))}</div>`:""}</div>
-      <div class="src">${esc(c.source||"")}${(c.messenger||c.phone||c.contact)?"<br>"+esc(short(c.messenger||c.phone||c.contact,48)):""}</div>
+      <div class="src">${esc(c.source||"")}${reachParts(c).length?"<br>💬 "+esc(short(reachParts(c).map(p=>p.txt).join(" · "),60)):(c.contact?"<br>"+esc(short(c.contact,48)):"")}</div>
       <div class="pills">${ds.map(d=>`<span class="pill" data-tone="${TONE[d.stage]||""}" title="${esc(d.title)}">${esc(stageName(d.stage,dealStages()))}</span>`).join("")||'<span class="muted">нет объектов</span>'}</div>
       <div>${nt?`<span class="due ${dueClass(nt.due)}">${esc(dueLabel(nt.due))}</span>`:'<span class="muted" style="font-size:13px">—</span>'}</div>
     </div>`).join("") || '<div class="empty">Никого не нашлось.</div>'}</div>`;
@@ -381,6 +408,8 @@ function drawRender(){
         <div><span>Город</span><b>${esc(doc.city||"—")}</b></div><div><span>Откуда</span><b>${esc(doc.source||"—")}</b></div>
         <div><span>Первый контакт</span><b>${doc.firstContact?esc(fmtD(doc.firstContact)):"—"}</b></div>
         <div><span>Объектов</span><b>${ds.length}${sumAll?" · "+money(sumAll):""}</b></div><div><span>Оплачено</span><b>${money(paidAll)}</b></div></div>`)+
+      (isNew?"":reachLine(doc,"reach-box"))+
+      fld("Где общаемся и как найти",inp("where",doc.where,"text",'placeholder="Telegram @ник / Instagram ник / телефон / почта"'))+
       `<div class="grid2">${fld("Имя",inp("name",doc.name,"text","required"))}${fld("Тип",`<select id="f_kind" name="kind">${opt(CLIENT_KINDS,doc.kind||"lead")}</select>`)}</div>`+
       `<div class="grid2">${fld("Компания",inp("company",doc.company))}${fld("Город",inp("city",doc.city))}</div>`+
       `<div class="grid2">${fld("Откуда пришёл",inp("source",doc.source,"text",'list="srcList"'))}${fld("Первый контакт",inp("firstContact",doc.firstContact,"date"))}</div>
@@ -407,7 +436,8 @@ function drawRender(){
   if(kind==="task"){
     eyebrow = doc.by==="claude"?"Задача · поставил Claude":"Задача"; title=isNew?"Новая задача":esc(doc.title);
     const deals = list("deals").filter(d=>!doc.clientId || d.clientId===doc.clientId);
-    body = fld("Что сделать",area("title",doc.title,2))+
+    body = (doc.clientId&&S.clients[doc.clientId]?`<div class="reach-box"><b>${esc(S.clients[doc.clientId].name)}</b> — где общаемся:${reachLine(S.clients[doc.clientId],"reach-in")||' <span class="muted">не указано, впишите в карточке клиента</span>'}</div>`:"")+
+      fld("Что сделать",area("title",doc.title,2))+
       `<div class="grid2">${fld("Срок",inp("due",doc.due,"date"))}${fld("Время напоминания",inp("time",doc.time,"time"))}</div>`+
       `<p class="hint">${doc.time?(doc.remindedAt?"Напоминание уже пришло в Телеграм. Поменяете срок или время, придёт снова.":"Бот напомнит в Телеграм в это время."):"Укажите время, и бот напомнит в Телеграм."}</p>`+
       fld("Раздел",`<select id="f_area" name="area">${opt([["clients","Клиенты"],["marketing","Маркетинг"]],doc.area||"clients")}</select>`)+
