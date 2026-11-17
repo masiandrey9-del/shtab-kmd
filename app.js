@@ -371,9 +371,13 @@ function initSortables(){
 }
 
 /* ---------- drawer ---------- */
-let drawerState=null;
-function openDrawer(kind,id,preset){ drawerState={kind,id,preset:preset||{}}; drawRender(); $("#drawer").hidden=false; $("#scrim").hidden=false; document.body.style.overflow="hidden"; }
-function closeDrawer(){ if(recOn&&rec){ try{rec.stop();}catch(e){} } drawerState=null; $("#drawer").hidden=true; $("#scrim").hidden=true; document.body.style.overflow=""; }
+let drawerState=null, drawerStack=[];
+const KIND_NAME={task:"задаче",client:"клиенту",deal:"объекту",video:"ролику",plan:"плану",product:"услуге",template:"шаблону"};
+function openDrawer(kind,id,preset){
+  if(drawerState && !$("#drawer").hidden && !(drawerState.kind===kind && drawerState.id===id && id)) drawerStack.push(drawerState);
+  drawerState={kind,id,preset:preset||{}}; drawRender(); const b=$("#drawer .d-body"); if(b) b.scrollTop=0; $("#drawer").hidden=false; $("#scrim").hidden=false; document.body.style.overflow="hidden"; }
+function drawerBack(){ if(!drawerStack.length){ closeDrawer(); return; } drawerState=drawerStack.pop(); drawRender(); }
+function closeDrawer(){ if(recOn&&rec){ try{rec.stop();}catch(e){} } drawerState=null; drawerStack=[]; $("#drawer").hidden=true; $("#scrim").hidden=true; document.body.style.overflow=""; }
 function opt(list,val,empty){ return (empty!=null?`<option value="">${esc(empty)}</option>`:"")+list.map(([v,l])=>`<option value="${esc(v)}" ${v===val?"selected":""}>${esc(l)}</option>`).join(""); }
 function fld(label,html){ return `<label class="f">${label}</label>${html}`; }
 const inp = (name,val,type="text",extra="") => `<input type="${type}" id="f_${name}" name="${name}" value="${esc(val==null?"":val)}" ${extra}>`;
@@ -436,7 +440,9 @@ function drawRender(){
   if(kind==="task"){
     eyebrow = doc.by==="claude"?"Задача · поставил Claude":"Задача"; title=isNew?"Новая задача":esc(doc.title);
     const deals = list("deals").filter(d=>!doc.clientId || d.clientId===doc.clientId);
-    body = (doc.clientId&&S.clients[doc.clientId]?`<div class="reach-box"><b>${esc(S.clients[doc.clientId].name)}</b> — где общаемся:${reachLine(S.clients[doc.clientId],"reach-in")||' <span class="muted">не указано, впишите в карточке клиента</span>'}</div>`:"")+
+    const tcl = doc.clientId&&S.clients[doc.clientId], tdl = doc.dealId&&S.deals[doc.dealId];
+    body = (tcl?`<div class="reach-box"><b>${esc(tcl.name)}</b> — где общаемся:${reachLine(tcl,"reach-in")||' <span class="muted">не указано, впишите в карточке клиента</span>'}</div>`:"")+
+      (isNew?"":`<div class="d-acts">${tcl?`<button class="btn sm" data-act="client" data-id="${esc(doc.clientId)}">👤 Карточка клиента</button>`:""}${tdl?`<button class="btn sm" data-act="deal" data-id="${esc(doc.dealId)}">📁 Объект</button>`:""}<button class="btn sm primary" data-act="newTaskFor" data-client="${esc(doc.clientId||"")}" data-deal="${esc(doc.dealId||"")}">+ Новая задача${tcl?" по клиенту":""}</button></div>`)+
       fld("Что сделать",area("title",doc.title,2))+
       `<div class="grid2">${fld("Срок",inp("due",doc.due,"date"))}${fld("Время напоминания",inp("time",doc.time,"time"))}</div>`+
       `<p class="hint">${doc.time?(doc.remindedAt?"Напоминание уже пришло в Телеграм. Поменяете срок или время, придёт снова.":"Бот напомнит в Телеграм в это время."):"Укажите время, и бот напомнит в Телеграм."}</p>`+
@@ -478,11 +484,12 @@ function drawRender(){
       fld("Статус",`<select id="f_status" name="status">${opt(PLAN_ST,doc.status||"plan")}</select>`)+
       fld("Пометка",area("note",doc.note,3));
   }
-  D.innerHTML = `<div class="d-head"><div style="flex:1;min-width:0"><div class="eyebrow">${eyebrow}</div><h3>${title}</h3></div>
+  const prev = drawerStack[drawerStack.length-1];
+  D.innerHTML = `${prev?`<button class="d-back" data-act="back">← Назад к ${KIND_NAME[prev.kind]||"предыдущему"}</button>`:""}<div class="d-head"><div style="flex:1;min-width:0"><div class="eyebrow">${eyebrow}</div><h3>${title}</h3></div>
       <button class="btn ghost sm" data-act="close" aria-label="Закрыть">✕</button></div>
     <form class="d-body" id="dform">${body}</form>
     <div class="d-foot">${(kind==="settings"||kind==="voice")?`<button class="btn" data-act="close">Закрыть</button>`:`${isNew?"":`<button class="btn ghost danger left" data-act="askDel">Удалить</button>`}<span id="delbox"></span>
-      <button class="btn" data-act="close">Отмена</button><button class="btn primary" data-act="save">Сохранить</button>`}</div>`;
+      <button class="btn" data-act="cancel">Отмена</button><button class="btn primary" data-act="save">Сохранить</button>`}</div>`;
   if(kind==="settings"){ renderSettings(); return; }
   if(kind==="voice"){ const ta=$("#f_vtext"); ta.oninput=showParse; setTimeout(()=>ta.focus(),50); return; }
   refreshDrawerLists();
@@ -536,7 +543,7 @@ async function drawerSave(){
   if(kind==="task" && !old){ doc.by="andrey"; doc.done=false; doc.createdAt=nowIso(); }
   if(kind==="task" && old && (old.due!==doc.due || (old.time||"")!==(doc.time||""))) doc.remindedAt="";
   if(kind==="client" && !old){ doc.createdAt=nowIso(); }
-  if(await save(col,nid,doc)){ toast("Сохранено"); closeDrawer(); }
+  if(await save(col,nid,doc)){ toast("Сохранено"); if(drawerStack.length) drawerBack(); else closeDrawer(); }
 }
 
 /* ---------- настройки: 2FA, уведомления, выход ---------- */
@@ -898,9 +905,11 @@ document.addEventListener("click", async e=>{
   else if(act==="newTaskFor"){ const v=a.dataset.video; openDrawer("task",null,{due:today(),area:v?"marketing":"clients",clientId:a.dataset.client||"",dealId:a.dataset.deal||"",videoId:v||""}); }
   else if(act==="planSt"){ const p=S.plan[id]; const i=PLAN_ST.findIndex(x=>x[0]===(p.status||"plan")); await save("plan",id,Object.assign({},p,{status:PLAN_ST[(i+1)%PLAN_ST.length][0]})); }
   else if(act==="close"){ e.preventDefault(); closeDrawer(); }
+  else if(act==="cancel"){ e.preventDefault(); if(drawerStack.length) drawerBack(); else closeDrawer(); }
+  else if(act==="back"){ e.preventDefault(); drawerBack(); }
   else if(act==="save"){ e.preventDefault(); drawerSave(); }
   else if(act==="askDel"){ e.preventDefault(); $("#delbox").innerHTML=`<span class="confirm">Удалить насовсем? <button class="btn sm danger" data-act="doDel">Да, удалить</button></span>`; }
-  else if(act==="doDel"){ e.preventDefault(); const {kind,id:did}=drawerState; await remove(colOf(kind),did); closeDrawer(); toast("Удалено"); }
+  else if(act==="doDel"){ e.preventDefault(); const {kind,id:did}=drawerState; await remove(colOf(kind),did); if(drawerStack.length) drawerBack(); else closeDrawer(); toast("Удалено"); }
   else if(act==="period"){ UI.period=a.dataset.k; render(); }
   else if(act==="ckind"){ UI.ckind=a.dataset.k; render(); }
   else if(act==="ptab"){ UI.ptab=a.dataset.k; render(); }
